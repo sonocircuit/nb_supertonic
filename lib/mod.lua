@@ -1,7 +1,8 @@
--- nb_supertonic v0.1 @sonoCircuit - based on supertonic @infinitedigits
+-- nb_supertonic v0.1 @sonoCircuit - based on supertonic @infinitedigits (thx zack!)
 
 local fs = require 'fileselect'
 local tx = require 'textentry'
+local mu = require 'musicutil'
 local md = require 'core/mods'
 
 local NUM_VOICES = 6
@@ -11,10 +12,15 @@ local vox_path = "/home/we/dust/data/nb_supertonic/supertonic_voxs"
 local default_kit = "/home/we/dust/data/nb_supertonic/supertonic_kits/default.stkit"
 
 local selected_voice = 1
+local base_note = 0
 local current_kit = ""
+local current_vox = {}
+for i = 1, NUM_VOICES do
+  current_vox[i] = ""
+end
 
 local voice_params = {
-  "level", "dist", "send_a", "send_b", "eq_freq", "eq_gain", "mix",
+  "level", "pan", "dist", "send_a", "send_b", "eq_freq", "eq_gain", "mix",
   "osc_wav", "osc_freq", "mod_mode", "mod_amt", "mod_rate", "osc_attack", "osc_decay",
   "noise_mode", "noise_freq", "noise_q", "noise_env", "noise_attack", "noise_decay", "noise_stereo",
   "osc_vel", "mod_vel", "noise_vel"
@@ -24,7 +30,7 @@ local voice_params = {
 ---------------- osc msgs ----------------
 
 local function trig_supertonic(note, vel)
-  local vox = note % NUM_VOICES
+  local vox = (note - base_note) % NUM_VOICES
   osc.send({'localhost', 57120}, '/nb_supertonic/trig', {vox, vel})
 end
 
@@ -46,7 +52,7 @@ local function set_resonance(val)
 end
 
 
----------------- functions ----------------
+---------------- utils ----------------
 
 local function linsig(k, x)
 	return (1 / (1 + math.exp(-k * (x - 0.5))))
@@ -54,6 +60,22 @@ end
 
 local function round_form(param, quant, form)
   return(util.round(param, quant)..form)
+end
+
+local function pan_display(param)
+  if param < -0.01 then
+    return ("L < "..math.abs(util.round(param * 100, 1)))
+  elseif param > 0.01 then
+    return (math.abs(util.round(param * 100, 1)).." > R")
+  else
+    return "> <"
+  end
+end
+
+local function mix_display(param)
+  local tone = util.round(util.linlin(-1, 1, 100, 0, param), 1)
+  local noise = util.round(util.linlin(-1, 1, 0, 100, param), 1)
+  return tone.."/"..noise
 end
 
 local function build_menu()
@@ -73,6 +95,8 @@ local function build_menu()
   end
   _menu.rebuild_params()
 end
+
+---------------- save load ----------------
 
 local function save_kit(txt)
   if txt then
@@ -101,8 +125,7 @@ local function load_kit(path)
             end
           end
         end
-        local name = path:match("[^/]*$")
-        current_kit = name:gsub(".stkit", "")
+        current_kit = path:match("[^/]*$"):gsub(".stkit", "")
         print("loaded supertonic kit: "..current_kit)
       else
         print("error: could not find kit", path)
@@ -134,8 +157,8 @@ local function load_voice(path)
             params:set("nb_supertonic_"..v.."_"..selected_voice, t[v])
           end
         end
-        local name = path:match("[^/]*$"):gsub(".kvox", "")
-        print("loaded supertonic vox: "..name)
+        current_vox[selected_voice] = path:match("[^/]*$"):gsub(".stvox", "")
+        print("loaded supertonic vox: "..current_vox[selected_voice])
       else
         print("error: could not find vox", path)
       end
@@ -145,8 +168,11 @@ local function load_voice(path)
   end
 end
 
+---------------- params ----------------
+
 local function add_params()
-  params:add_group("nb_supertonic_group", "supertonic", ((NUM_VOICES * 24) + 16))
+  params:add_group("nb_supertonic_group", "supertonic", ((NUM_VOICES * 25) + 17))
+  params:hide("nb_supertonic_group")
   
   params:add_separator("nb_supertonic_kits", "supertonic kit")
 
@@ -167,6 +193,9 @@ local function add_params()
   params:add_control("nb_supertonic_global_resonance", "lpf rez", controlspec.new(0, 1, "lin", 0, 0), function(param) return round_form(param:get() * 100, 1, "%") end)
   params:set_action("nb_supertonic_global_resonance", function(val) set_resonance(val) end)
 
+  params:add_number("nb_supertonic_base", "base note", 0, 11, 0, function(param) return mu.note_num_to_name(param:get(), false) end)
+  params:set_action("nb_supertonic_base", function(val) base_note = val end)
+
   params:add_separator("nb_supertonic_voice", "voice")
 
   params:add_number("nb_supertonic_selected_voice", "selected voice", 1, NUM_VOICES, 1)
@@ -179,15 +208,18 @@ local function add_params()
   params:set_action("nb_supertonic_save_voice", function() fs.enter(vox_path, function(path) load_voice(path) end) end)
 
   params:add_trigger("nb_supertonic_load_voice", "< save voice")
-  params:set_action("nb_supertonic_load_voice", function() tx.enter(save_voice, "") end)
+  params:set_action("nb_supertonic_load_voice", function() tx.enter(save_voice, current_vox[selected_voice]) end)
   
   params:add_separator("nb_supertonic_level_params", "levels")
   for i = 1, NUM_VOICES do
-    params:add_control("nb_supertonic_level_"..i, "level", controlspec.new(0, 1, "lin", 0, 1), function(param) return round_form(param:get() * 100, 1, "%") end)
+    params:add_control("nb_supertonic_level_"..i, "level", controlspec.new(0, 2, "lin", 0, 1), function(param) return round_form(param:get() * 100, 1, "%") end)
     params:set_action("nb_supertonic_level_"..i, function(val) set_param(i, 'level', val)  end)
 
+    params:add_control("nb_supertonic_pan_"..i, "pan", controlspec.new(-1, 1, "lin", 0, 0, "", 1/200), function(param) return pan_display(param:get()) end)
+    params:set_action("nb_supertonic_pan_"..i, function(val) set_param(i, 'pan', val)  end)
+
     params:add_control("nb_supertonic_dist_"..i, "distortion", controlspec.new(0, 1, "lin", 0, 0), function(param) return round_form(param:get() * 100, 1, "%") end)
-    params:set_action("nb_supertonic_dist_"..i, function(val) set_param(i, 'distAmt', linsig(12.5, val)) end)
+    params:set_action("nb_supertonic_dist_"..i, function(val) set_param(i, 'distAmt', val) end)
 
     params:add_control("nb_supertonic_send_a_"..i, "send a", controlspec.new(0, 1, "lin", 0, 0), function(param) return round_form(param:get() * 100, 1, "%") end)
     params:set_action("nb_supertonic_send_a_"..i, function(val) set_param(i, 'sendA', val) end)
@@ -199,69 +231,69 @@ local function add_params()
     params:set_action("nb_supertonic_eq_freq_"..i, function(val) set_param(i, 'eQFreq', val) end)
 
     params:add_control("nb_supertonic_eq_gain_"..i, "eq gain", controlspec.new(-1, 1, "lin", 0, 0, "", 1/200), function(param) return round_form(param:get() * 20, 0.1, "dB") end)
-    params:set_action("nb_supertonic_eq_gain_"..i, function(val) set_param(i, 'eQFreq', val * 20) end)
+    params:set_action("nb_supertonic_eq_gain_"..i, function(val) set_param(i, 'eQGain', val * 20) end)
 
-    params:add_control("nb_supertonic_mix_"..i, "mix [tone/noise]", controlspec.new(0, 1, "lin", 0, 0), function(param) return round_form(100 - (param:get() * 100), 1, "/")..round_form(param:get() * 100, 1, "") end)
-    params:set_action("nb_supertonic_mix_"..i, function(val) set_param(i, 'mix', linsig(12.5, val)) end)
+    params:add_control("nb_supertonic_mix_"..i, "mix [tone/noise]", controlspec.new(-1, 1, "lin", 0, -0.8), function(param) return mix_display(param:get()) end)
+    params:set_action("nb_supertonic_mix_"..i, function(val) set_param(i, 'mix', val) end)
   end
 
   params:add_separator("nb_supertonic_tone_params", "tone")
   for i = 1, NUM_VOICES do
-    params:add_option("nb_supertonic_osc_wav_"..i, "tone waveform", {"sine", "tri", "saw"}, 1)
+    params:add_option("nb_supertonic_osc_wav_"..i, "waveform", {"sine", "tri", "saw"}, 1)
     params:set_action("nb_supertonic_osc_wav_"..i, function(val) set_param(i, 'oscWave', val - 1)  end)
 
-    params:add_control("nb_supertonic_osc_freq_"..i, "tone freq", controlspec.new(20, 20000, "exp", 0, 1000), function(param) return round_form(param:get(), 1, "hz") end)
+    params:add_control("nb_supertonic_osc_freq_"..i, "freq", controlspec.new(20, 20000, "exp", 0, 1000), function(param) return round_form(param:get(), 1, "hz") end)
     params:set_action("nb_supertonic_osc_freq_"..i, function(val) set_param(i, 'oscFreq', val + 5) end)
 
-    params:add_option("nb_supertonic_mod_mode_"..i, "tone mod mode", {"decay", "sine", "random"}, 1)
+    params:add_option("nb_supertonic_mod_mode_"..i, "mod mode", {"decay", "sine", "random"}, 1)
     params:set_action("nb_supertonic_mod_mode_"..i, function(val) set_param(i, 'modMode', val - 1)  end)
 
-    params:add_number("nb_supertonic_mod_amt_"..i, "tone mod amt", -96, 96, 0, function(param) return  (param:get() < 0 and "" or "+")..param:get().."st" end)
-    params:set_action("nb_supertonic_mod_amt_"..i, function(val) set_param(i, 'modAmt', val)  end)
+    params:add_number("nb_supertonic_mod_amt_"..i, "mod amt", -96, 96, 0, function(param) return  (param:get() < 0 and "" or "+")..param:get().."st" end)
+    params:set_action("nb_supertonic_mod_amt_"..i, function(val) set_param(i, 'modAmt', val * 0.5)  end)
 
-    params:add_control("nb_supertonic_mod_rate_"..i, "tone mod rate", controlspec.new(0.1, 20000, "exp", 0, 17), function(param) return round_form(param:get(), 0.1, "hz") end)
+    params:add_control("nb_supertonic_mod_rate_"..i, "mod rate", controlspec.new(0.1, 20000, "exp", 0, 17), function(param) return round_form(param:get(), 0.1, "hz") end)
     params:set_action("nb_supertonic_mod_rate_"..i, function(val) set_param(i, 'eQFreq', val) end)
 
-    params:add_control("nb_supertonic_osc_attack_"..i, "tone attack", controlspec.new(0, 10, "lin", 0, 0, "", 1/1000), function(param) return round_form(param:get() * 1000, 1, "ms") end)
+    params:add_control("nb_supertonic_osc_attack_"..i, "attack", controlspec.new(0, 10, "lin", 0, 0, "", 1/1000), function(param) return round_form(param:get() * 1000, 1, "ms") end)
     params:set_action("nb_supertonic_osc_attack_"..i, function(val) set_param(i, 'oscAtk', val) end)
 
-    params:add_control("nb_supertonic_osc_decay_"..i, "tone decay", controlspec.new(0, 10, "lin", 0, 0.32, "", 1/1000), function(param) return round_form(param:get() * 1000, 1, "ms") end)
+    params:add_control("nb_supertonic_osc_decay_"..i, "decay", controlspec.new(0, 10, "lin", 0, 0.32, "", 1/1000), function(param) return round_form(param:get() * 1000, 1, "ms") end)
     params:set_action("nb_supertonic_osc_decay_"..i, function(val) set_param(i, 'oscDcy', val) end)
   end
   
   params:add_separator("nb_supertonic_noise_params", "noise")
   for i = 1, NUM_VOICES do
-    params:add_control("nb_supertonic_noise_freq_"..i, "noise freq", controlspec.new(20, 20000, "exp", 0, 1000), function(param) return round_form(param:get(), 1, "hz") end)
+    params:add_control("nb_supertonic_noise_freq_"..i, "freq", controlspec.new(20, 20000, "exp", 0, 1000), function(param) return round_form(param:get(), 1, "hz") end)
     params:set_action("nb_supertonic_noise_freq_"..i, function(val) set_param(i, 'nFilFrq', val) end)
 
-    params:add_control("nb_supertonic_noise_q_"..i, "noise filter q", controlspec.new(0.1, 10000, "exp", 0, 0.7), function(param) return round_form(param:get(), 0.1, "") end)
+    params:add_control("nb_supertonic_noise_q_"..i, "filter q", controlspec.new(0.1, 10000, "exp", 0, 0.7), function(param) return round_form(param:get(), 0.1, "") end)
     params:set_action("nb_supertonic_noise_q_"..i, function(val) set_param(i, 'nFilQ', val) end)
 
-    params:add_option("nb_supertonic_noise_mode_"..i, "noise filter mode", {"lp", "bp", "hp"}, 1)
+    params:add_option("nb_supertonic_noise_mode_"..i, "filter mode", {"lp", "bp", "hp"}, 1)
     params:set_action("nb_supertonic_noise_mode_"..i, function(val) set_param(i, 'nFilMod', val - 1)  end)
 
-    params:add_option("nb_supertonic_noise_env_"..i, "noise env mode", {"exp", "lin", "mod"}, 1)
+    params:add_option("nb_supertonic_noise_env_"..i, "env mode", {"exp", "lin", "mod"}, 1)
     params:set_action("nb_supertonic_noise_env_"..i, function(val) set_param(i, 'nEnvMod', val - 1)  end)
     
-    params:add_control("nb_supertonic_noise_attack_"..i, "noise attack", controlspec.new(0, 10, "lin", 0, 0, "", 1/1000), function(param) return round_form(param:get() * 1000, 1, "ms") end)
+    params:add_control("nb_supertonic_noise_attack_"..i, "attack", controlspec.new(0, 10, "lin", 0, 0, "", 1/1000), function(param) return round_form(param:get() * 1000, 1, "ms") end)
     params:set_action("nb_supertonic_noise_attack_"..i, function(val) set_param(i, 'nEnvAtk', val) end)
 
-    params:add_control("nb_supertonic_noise_decay_"..i, "noise decay", controlspec.new(0, 10, "lin", 0, 0.32, "", 1/1000), function(param) return round_form(param:get() * 1000, 1, "ms") end)
+    params:add_control("nb_supertonic_noise_decay_"..i, "decay", controlspec.new(0, 10, "lin", 0, 0.32, "", 1/1000), function(param) return round_form(param:get() * 1000, 1, "ms") end)
     params:set_action("nb_supertonic_noise_decay_"..i, function(val) set_param(i, 'nEnvDcy', val * 1.4) end)
     
-    params:add_option("nb_supertonic_noise_stereo_"..i, "noise stereo", {"off", "on"}, 2)
+    params:add_option("nb_supertonic_noise_stereo_"..i, "stereo", {"off", "on"}, 2)
     params:set_action("nb_supertonic_noise_stereo_"..i, function(val) set_param(i, 'nStereo', val - 1)  end)
   end
   
   params:add_separator("nb_supertonic_velocity_params", "velocity")
   for i = 1, NUM_VOICES do
-    params:add_control("nb_supertonic_osc_vel_"..i, "osc velocity", controlspec.new(0, 2, "lin", 0, 1, "", 1/200), function(param) return round_form(param:get() * 100, 1, "%") end)
+    params:add_control("nb_supertonic_osc_vel_"..i, "osc velocity", controlspec.new(0, 1, "lin", 0, 1), function(param) return round_form(param:get() * 100, 1, "%") end)
     params:set_action("nb_supertonic_osc_vel_"..i, function(val) set_param(i, 'oscVel', val)  end)
 
-    params:add_control("nb_supertonic_mod_vel_"..i, "mod velocity", controlspec.new(0, 2, "lin", 0, 1, "", 1/200), function(param) return round_form(param:get() * 100, 1, "%") end)
+    params:add_control("nb_supertonic_mod_vel_"..i, "mod velocity", controlspec.new(0, 1, "lin", 0, 1), function(param) return round_form(param:get() * 100, 1, "%") end)
     params:set_action("nb_supertonic_mod_vel_"..i, function(val) set_param(i, 'modVel', val)  end)
 
-    params:add_control("nb_supertonic_noise_vel_"..i, "noise velocity", controlspec.new(0, 2, "lin", 0, 1, "", 1/200), function(param) return round_form(param:get() * 100, 1, "%") end)
+    params:add_control("nb_supertonic_noise_vel_"..i, "noise velocity", controlspec.new(0, 1, "lin", 0, 1), function(param) return round_form(param:get() * 100, 1, "%") end)
     params:set_action("nb_supertonic_noise_vel_"..i, function(val) set_param(i, 'nVel', val)  end)
   end
 end
@@ -333,8 +365,8 @@ local function post_system()
   if util.file_exists(kit_path) == false then
     util.make_dir(kit_path)
     util.make_dir(vox_path)
-    --os.execute('cp '.. '/home/we/dust/code/nb_supertonic/data/supertonic_kits/*.stkit '.. kit_path)
-    --os.execute('cp '.. '/home/we/dust/code/nb_supertonic/data/supertonic_voxs/*.stvox '.. vox_path)
+    os.execute('cp '.. '/home/we/dust/code/nb_supertonic/data/supertonic_kits/*.stkit '.. kit_path)
+    os.execute('cp '.. '/home/we/dust/code/nb_supertonic/data/supertonic_voxs/*.stvox '.. vox_path)
   end
 end
 
@@ -344,4 +376,3 @@ end
 
 md.hook.register("system_post_startup", "nb supertonic post startup", post_system)
 md.hook.register("script_pre_init", "nb supertonic pre init", pre_init)
-
