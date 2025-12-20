@@ -12,6 +12,7 @@ NB_supertonic {
 			glbParams = Dictionary.newFrom([
 				\mainAmp, 1,
 				\level, 1,
+				\pan, 0,
 				\sendA, 0,
 				\sendB, 0,
 				\mix, 0.6,
@@ -22,7 +23,7 @@ NB_supertonic {
 				\oscDcy, 0.500,
 				\oscWave, 0,
 				\oscFreq, 120,
-				\modMode, 0.1,
+				\modMode, 0,
 				\modRate, 400,
 				\modAmt, 18,
 				\nEnvAtk, 0.026,
@@ -45,7 +46,7 @@ NB_supertonic {
 
 			SynthDef(\nb_superT,{
 				arg outBus, sendABus, sendBBus, nBuf,
-				vel = 0.5, mainAmp = 1, level = 1, sendA = 0, sendB = 0, distAmt = 0.2, eQFreq = 632.4, eQGain = -20, mix = 0.8,
+				vel = 0.5, mainAmp = 1, level = 1, pan = 0, sendA = 0, sendB = 0, distAmt = 0.2, eQFreq = 632.4, eQGain = -20, mix = 0.8,
 				oscWave = 0, oscFreq = 54, modMode = 0, modRate = 400, modAmt = 18, oscAtk = 0, oscDcy = 0.500,
 				nFilFrq = 1000, nFilQ = 2.5, nFilMod = 0, nEnvMod = 0, nStereo = 1, nEnvAtk = 0.026, nEnvDcy = 0.200,
 				oscVel = 1, nVel = 1, modVel = 1, lpf_hz = 20000, lpf_rz = 1;
@@ -56,6 +57,7 @@ NB_supertonic {
 
 				// rescale and clamp
 				vel = vel.linlin(0, 1, 0, 2);
+				eQFreq = eQFreq.clip(20, 20000);
 				lpf_hz = lpf_hz.clip(20, 20000);
 				lpf_q = lpf_rz.linlin(0, 1, 1, 0.05);
 				clapFreq = (4311 / (nEnvAtk + 28.4)) + 11.44;
@@ -65,18 +67,18 @@ NB_supertonic {
 				dAction = Select.kr(((oscAtk + oscDcy) > (nEnvAtk + nEnvDcy)), [0, 2]);
 				envO = EnvGen.ar(Env.new([0.0001, 1, 0.9, 0.0001], [oscAtk, oscDcy * decayer, oscDcy], \exponential), doneAction: dAction);
 				envX = EnvGen.ar(Env.new([0.001, 1, 0.0001], [nEnvAtk, nEnvDcy], \exponential), doneAction:(2 - dAction));
-				envL = EnvGen.ar(Env.new([0.0001, 1, 0.9, 0.0001],[nEnvAtk, nEnvDcy * decayer,nEnvDcy * (1 - decayer)], \linear));
+				envL = EnvGen.ar(Env.new([0.0001, 1, 0.9, 0.0001], [nEnvAtk, nEnvDcy * decayer,nEnvDcy * (1 - decayer)], \linear));
 				envD = Decay.ar(Impulse.ar(clapFreq), clapFreq.reciprocal, 0.85, 0.15) * Trig.ar(1, nEnvAtk + 0.001) + EnvGen.ar(
 					Env.new([0.001, 0.001, 1, 0.0001], [nEnvAtk,0.001, nEnvDcy], \exponential)
 				);
 
 				// pitch modulation
 				pitchMod = Select.ar(modMode, [
-					Decay.ar(Impulse.ar(0), (2 * modRate).reciprocal), // decay
-					SinOsc.ar(-1 * modRate), // sine
-					Lag.ar(LFNoise0.ar(4 * modRate), (4 * modRate).reciprocal), // random
+					Decay.ar(Impulse.ar(0.0001), (2 * modRate).reciprocal), // decay
+					SinOsc.ar(modRate, pi), // sine
+					LFNoise0.ar(4 * modRate).lag((4 * modRate).reciprocal) // random
 				]);
-				pitchMod = pitchMod * modAmt / 2 * (modVel.linlin(0, 200, 2, 0) * vel);
+				pitchMod = pitchMod * modAmt * modVel * vel;
 				oscFreq = ((oscFreq).cpsmidi + pitchMod).midicps;
 
 				// noise playback
@@ -90,7 +92,7 @@ NB_supertonic {
 					SawDPW.ar(oscFreq) * 0.5,
 				]);
 				osc = Select.ar(modMode > 1, [osc, SelectX.ar(oscDcy < 0.1, [LPF.ar(wn2, modRate), osc])]) * envO;
-				osc = (osc * oscVel.linlin(0, 2, 1, 0) * vel).softclip;
+				osc = (osc * oscVel * vel).softclip;
 
 				// noise source
 				noz = Select.ar(nStereo, [wn1, [wn1, wn2]]);
@@ -105,10 +107,10 @@ NB_supertonic {
 				nozPostF = SelectX.ar((0.1092 * nFilQ.log + 0.0343), [nozPostF, SinOsc.ar(nFilFrq)]);
 				// noise env & vel
 				noz = Splay.ar(nozPostF * Select.ar(nEnvMod, [envX, envL, envD]));
-				noz = (noz * nVel.linlin(0, 2, 1, 0) * vel).softclip;
+				noz = (noz * nVel * vel).softclip * -6.dbamp;
 
 				// mix oscillator and noise
-				snd = SelectX.ar(mix * 2, [noz * 0.5, noz * 2, osc * 1]);
+				snd = XFade2.ar(osc, noz, mix);
 				// distortion
 				snd = (snd * (1 - distAmt) + ((snd * distAmt.linlin(0, 1, 12, 24).dbamp).softclip * distAmt));
 				snd = snd * distAmt.linlin(0, 1, 0, -6).dbamp;
@@ -117,9 +119,11 @@ NB_supertonic {
 				// remove sub freq
 				snd = HPF.ar(snd, 20);
 				// final level
-				snd = snd * level * mainAmp * -12.dbamp;
+				snd = snd * level * mainAmp * -9.dbamp;
 				// lowpass
 				snd = RLPF.ar(snd, lpf_hz, lpf_q);
+				// pan
+				snd = Balance2.ar(snd[0], snd[1], pan);
 				// output
 				Out.ar(sendABus, sendA * snd);
 				Out.ar(sendBBus, sendB * snd);
